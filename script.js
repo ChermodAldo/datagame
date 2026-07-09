@@ -25,6 +25,7 @@ let forceScatterNextSpin = false;
 let currentSpinMode = 'ZONK'; 
 const RTP_HOLD_TIME = 30 * 60 * 1000; 
 
+// Listener Admin
 onValue(ref(db, 'admin_settings'), (snapshot) => {
     if (snapshot.exists()) {
         let data = snapshot.val();
@@ -57,8 +58,46 @@ function processAutoRTP() {
     }
 }
 
+// ====================================================================
+// 2. KERANGKA KOMUNIKASI SALDO IFRAME DENGAN PARENT (calon.html)
+// ====================================================================
+let currentBalance = 0;
+const balanceEl = document.getElementById('balance');
+const formatRp = (num) => new Intl.NumberFormat('en-US').format(num || 0);
+
+window.addEventListener('message', (event) => {
+    if (!event.data || !event.data.action) return;
+
+    if (event.data.action === 'UPDATE_BALANCE_UI') {
+        currentBalance = event.data.balance;
+        balanceEl.innerText = formatRp(currentBalance);
+    }
+
+    if (event.data.action === 'BET_APPROVED') {
+        currentBalance = event.data.newBalance;
+        balanceEl.innerText = formatRp(currentBalance);
+        
+        // Memulai spin setelah saldo dipotong
+        totalWinRound = 0; winEl.innerText = "0.00";
+        currentMultiIndex = 0; updateMultiplierUI();  
+        executeRollPhase(); 
+    }
+
+    if (event.data.action === 'INSUFFICIENT_FUNDS') {
+        alert("Maaf, Saldo Anda tidak mencukupi!");
+        gameState = 'IDLE';
+        btnSpin.disabled = false;
+        btnSpin.classList.remove('btn-spin-anim');
+        autoSpinCount = 0; isAutoInfinity = false; updateAutoBtnText();
+    }
+});
+
+function requestBalance() { window.parent.postMessage({ action: 'GET_BALANCE' }, '*'); }
+function potongSaldo(amount) { window.parent.postMessage({ action: 'REQUEST_BET', amount: amount }, '*'); }
+function tambahSaldo(amount) { window.parent.postMessage({ action: 'ADD_WINNINGS', amount: amount }, '*'); }
+
 // ==========================================
-// 2. PRELOADER & TWEEN.JS
+// 3. PRELOADER & TWEEN.JS
 // ==========================================
 function animate(time) { requestAnimationFrame(animate); TWEEN.update(time); }
 requestAnimationFrame(animate);
@@ -78,7 +117,9 @@ const imageUrls = [
 let loadedImages = 0; const totalImages = imageUrls.length; let hasInitialized = false;
 function tryInitGame() {
     if (hasInitialized) return; hasInitialized = true;
-    document.getElementById('loading-screen').classList.add('hidden'); initGameUI();
+    document.getElementById('loading-screen').classList.add('hidden'); 
+    requestBalance(); // Sinkronisasi awal dengan parent
+    initGameUI();
 }
 
 imageUrls.forEach(url => {
@@ -93,39 +134,8 @@ imageUrls.forEach(url => {
 });
 
 // ==========================================
-// 3. GLOBAL STATE & REAL-TIME API (IFRAME)
+// 4. GLOBAL STATE & CONFIGURATIONS
 // ==========================================
-// Saldo sekarang diatur sepenuhnya oleh platform web (calon.html)
-let balance = 0; 
-const formatRp = (num) => new Intl.NumberFormat('id-ID').format(num);
-
-// Dengarkan balasan dari calon.html
-window.addEventListener('message', (e) => {
-    if (!e.data || !e.data.action) return;
-    
-    if (e.data.action === 'UPDATE_BALANCE_UI') {
-        balance = e.data.balance;
-        document.getElementById('balance').innerText = formatRp(balance);
-    }
-    
-    if (e.data.action === 'BET_APPROVED') {
-        balance = e.data.newBalance;
-        document.getElementById('balance').innerText = formatRp(balance);
-        proceedWithSpin(); // Lanjut putar setelah saldo di web utama dipotong
-    }
-    
-    if (e.data.action === 'INSUFFICIENT_FUNDS') {
-        alert("Saldo Anda tidak mencukupi!");
-        autoSpinCount = 0; isAutoInfinity = false; updateAutoBtnText();
-        gameState = 'IDLE'; 
-        btnSpin.disabled = false; btnSpin.classList.remove('btn-spin-anim');
-    }
-});
-
-// Minta saldo saat game pertama kali dibuka
-window.parent.postMessage({ action: 'GET_BALANCE' }, '*');
-
-
 const betSteps = [200, 400, 1000, 2000, 5000, 10000, 20000, 50000];
 let currentBetIndex = 2;
 
@@ -162,13 +172,12 @@ const paytable = {
     'dots2': {3: 2, 4: 5, 5: 10}, 'bamboo2': {3: 2, 4: 5, 5: 10}
 };
 
-const balanceEl = document.getElementById('balance');
 const betEl = document.getElementById('current-bet');
 const winEl = document.getElementById('win-amount');
 const btnSpin = document.getElementById('btn-spin');
 
 // ==========================================
-// 4. UI CONTROLS & INIT
+// 5. UI CONTROLS & INIT
 // ==========================================
 window.changeBet = function(dir) {
     if (gameState !== 'IDLE' || autoSpinCount > 0 || isFreeSpin) return;
@@ -223,7 +232,6 @@ function generateTileDOM(col, row, sym) {
 }
 
 function initGameUI() {
-    balanceEl.innerText = formatRp(balance);
     betEl.innerText = formatRp(betSteps[currentBetIndex]);
     const initialBoard = [  
         [ {id:'dots5'}, {id:'bamboo5'}, {id:'dots2'}, {id:'bamboo2'} ],   
@@ -245,23 +253,23 @@ function initGameUI() {
 }
 
 // ==========================================
-// 5. MASTER BRAIN: CUSTOM FUNCTION POOL (PG SOFT STYLE)
+// 6. CUSTOM FUNCTION POOL (PG SOFT STYLE)
 // ==========================================
 function getSymbolFromPool(mode, col, excludeIds = []) {
+    let baseElements = symbols.map(s => s.id).filter(id => id !== 'wild' && id !== 'scatter');
     let pool = [];
+    
     if (mode === 'GACOR') {
         pool = ['fa', 'fa', 'zhong', 'zhong', 'purple', 'wan', 'dots5', 'bamboo5', 'wild'];
-    } 
-    else if (mode === 'RECEH') {
+    } else if (mode === 'RECEH') {
         pool = ['dots2', 'dots2', 'dots2', 'bamboo2', 'bamboo2', 'wan', 'purple'];
-    } 
-    else { 
-        pool = ['dots2', 'bamboo2', 'dots5', 'bamboo5', 'wan', 'purple'];
+    } else { 
+        pool = baseElements;
     }
 
     if (excludeIds.length > 0) {
         pool = pool.filter(id => !excludeIds.includes(id));
-        if (pool.length === 0) pool = ['dots2']; 
+        if (pool.length === 0) pool = ['dots2'];
     }
 
     let selectedId = pool[Math.floor(Math.random() * pool.length)];
@@ -269,41 +277,31 @@ function getSymbolFromPool(mode, col, excludeIds = []) {
     let sym = { ...symObj, isGoldFrame: false };
     
     let goldChance = (globalRTP / 100) * (isFreeSpin ? 0.20 : 0.05);
-    if (mode === 'GACOR') goldChance += 0.15; 
+    if (mode === 'GACOR') goldChance += 0.15;
     
     if (col > 0 && col < 4 && selectedId !== 'scatter' && selectedId !== 'wild' && Math.random() < goldChance) {
         sym.isGoldFrame = true;
     }
-
     return sym;
 }
 
 function startSpin() {
     if (gameState !== 'IDLE') return;
     let bet = betSteps[currentBetIndex];
-
+    
     gameState = 'SPINNING';  
     btnSpin.disabled = true; btnSpin.classList.add('btn-spin-anim');  
     document.getElementById('win-banner').classList.add('hidden');  
 
-    // 🔥 API REQUEST: Minta izin calon.html potong saldo
     if (!isFreeSpin) {  
-        window.parent.postMessage({ action: 'REQUEST_BET', amount: bet }, '*');
-        // Script akan berhenti di sini dan lanjut di listener (proceedWithSpin) setelah di-approve
+        // 🌟 POTONG SALDO API: Berhenti di sini sampai disetujui parent
+        potongSaldo(bet);
     } else {  
         freeSpinsLeft--; document.getElementById('fs-left-val').innerText = freeSpinsLeft;  
-        proceedWithSpin(); // Lanjut gratis
+        totalWinRound = 0; winEl.innerText = formatRp(fsTotalWinAmount);  
+        currentMultiIndex = 0; updateMultiplierUI();  
+        executeRollPhase();  
     }  
-}
-
-function proceedWithSpin() {
-    if (!isFreeSpin) {
-        totalWinRound = 0; winEl.innerText = "0.00";  
-    } else {
-        totalWinRound = 0; winEl.innerText = formatRp(fsTotalWinAmount);
-    }
-    currentMultiIndex = 0; updateMultiplierUI();  
-    executeRollPhase();  
 }
 
 function executeRollPhase() {
@@ -330,7 +328,6 @@ function executeRollPhase() {
             let gacorChance = (globalRTP / 100) * 15; let recehChance = (globalRTP / 100) * 40; 
             if (randRTP < gacorChance) currentSpinMode = 'GACOR';   
             else if (randRTP < gacorChance + recehChance) currentSpinMode = 'RECEH';   
-            
             if (isFreeSpin && currentSpinMode === 'ZONK' && Math.random() < 0.3) currentSpinMode = 'RECEH';
         }
     }
@@ -348,8 +345,7 @@ function executeRollPhase() {
         let scatterCols = [0, 1, 2, 3, 4].sort(() => 0.5 - Math.random()).slice(0, numScatters);
         scatterCols.forEach(col => {
             let row = Math.floor(Math.random() * colsConfig[col]);
-            let scatterObj = symbols.find(s => s.id === 'scatter');
-            targetGridData[col][row] = { ...scatterObj, isGoldFrame: false };
+            targetGridData[col][row] = { ...symbols.find(s => s.id === 'scatter'), isGoldFrame: false };
         });
     }
 
@@ -358,8 +354,7 @@ function executeRollPhase() {
         let colsToFake = [0, 1, 2, 3, 4].sort(() => 0.5 - Math.random()).slice(0, numFake);
         colsToFake.forEach(col => {
             let row = Math.floor(Math.random() * colsConfig[col]);
-            let scatterObj = symbols.find(s => s.id === 'scatter');
-            targetGridData[col][row] = { ...scatterObj, isGoldFrame: false };
+            targetGridData[col][row] = { ...symbols.find(s => s.id === 'scatter'), isGoldFrame: false };
         });
     }
 
@@ -409,7 +404,6 @@ function executeRollPhase() {
                 for (let row = 0; row < colsConfig[col]; row++) {  
                     let sym = targetGridData[col][row]; 
                     let tile = generateTileDOM(col, row, sym);  
-                    
                     if (sym.id === 'scatter') {
                         tile.classList.add('scatter-drop-anim');
                         setTimeout(() => tile.classList.remove('scatter-drop-anim'), 600);
@@ -424,7 +418,7 @@ function executeRollPhase() {
 }
 
 // ==========================================
-// 6. LOGIKA CASCADE GRAVITASI ASLI PG SOFT
+// 7. LOGIKA CASCADE GRAVITASI ASLI PG SOFT
 // ==========================================
 function evaluateWinningWays() {
     let baseWinCash = 0; let winningTilesSet = new Set(); let firstReelSyms = new Set();
@@ -454,7 +448,10 @@ function triggerDestruction(winningTilesSet, baseWinCash) {
     let activeMulti = activeMultiArr[currentMultiIndex];
     let calcWin = baseWinCash * activeMulti;
 
-    totalWinRound += calcWin;  
+    // 🌟 TAMBAH SALDO API JIKA MENANG
+    if (calcWin > 0) tambahSaldo(calcWin);
+
+    totalWinRound += calcWin; 
     
     if (isFreeSpin) {
         fsTotalWinAmount += calcWin; 
@@ -564,7 +561,7 @@ function triggerDestruction(winningTilesSet, baseWinCash) {
 }
 
 // ==========================================
-// 7. FREE SPIN SCENARIOS & END ROUND
+// 8. FREE SPIN SCENARIOS & END ROUND
 // ==========================================
 function countScatters() {
     let count = 0;
@@ -624,11 +621,6 @@ function triggerFreeSpin(amount, isRetrigger) {
 }
 
 function handleEndRound(skipWinAnim = false) {
-    // 🔥 KIRIM TOTAL MENANG KE DATABASE (calon.html)
-    if (totalWinRound > 0) {
-        window.parent.postMessage({ action: 'ADD_WINNINGS', amount: totalWinRound }, '*');
-    }
-
     let bet = betSteps[currentBetIndex];
     let winRatio = totalWinRound / bet;
     
