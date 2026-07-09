@@ -25,7 +25,6 @@ let forceScatterNextSpin = false;
 let currentSpinMode = 'ZONK'; 
 const RTP_HOLD_TIME = 30 * 60 * 1000; 
 
-// Listener Admin
 onValue(ref(db, 'admin_settings'), (snapshot) => {
     if (snapshot.exists()) {
         let data = snapshot.val();
@@ -59,7 +58,7 @@ function processAutoRTP() {
 }
 
 // ====================================================================
-// 2. KERANGKA KOMUNIKASI SALDO IFRAME DENGAN PARENT (calon.html)
+// 2. KERANGKA KOMUNIKASI SALDO IFRAME DENGAN PARENT
 // ====================================================================
 let currentBalance = 0;
 const balanceEl = document.getElementById('balance');
@@ -77,7 +76,6 @@ window.addEventListener('message', (event) => {
         currentBalance = event.data.newBalance;
         balanceEl.innerText = formatRp(currentBalance);
         
-        // Memulai spin setelah saldo dipotong
         totalWinRound = 0; winEl.innerText = "0.00";
         currentMultiIndex = 0; updateMultiplierUI();  
         executeRollPhase(); 
@@ -118,7 +116,7 @@ let loadedImages = 0; const totalImages = imageUrls.length; let hasInitialized =
 function tryInitGame() {
     if (hasInitialized) return; hasInitialized = true;
     document.getElementById('loading-screen').classList.add('hidden'); 
-    requestBalance(); // Sinkronisasi awal dengan parent
+    requestBalance();
     initGameUI();
 }
 
@@ -253,14 +251,15 @@ function initGameUI() {
 }
 
 // ==========================================
-// 6. CUSTOM FUNCTION POOL (PG SOFT STYLE)
+// 6. KUNCI ANTI-RUNGKAD: CUSTOM FUNCTION POOL
 // ==========================================
 function getSymbolFromPool(mode, col, excludeIds = []) {
     let baseElements = symbols.map(s => s.id).filter(id => id !== 'wild' && id !== 'scatter');
     let pool = [];
     
     if (mode === 'GACOR') {
-        pool = ['fa', 'fa', 'zhong', 'zhong', 'purple', 'wan', 'dots5', 'bamboo5', 'wild'];
+        // HAPUS WILD DARI SINI BIAR GAK TURUN DARI LANGIT
+        pool = ['fa', 'fa', 'zhong', 'purple', 'wan', 'dots5', 'bamboo5'];
     } else if (mode === 'RECEH') {
         pool = ['dots2', 'dots2', 'dots2', 'bamboo2', 'bamboo2', 'wan', 'purple'];
     } else { 
@@ -273,13 +272,18 @@ function getSymbolFromPool(mode, col, excludeIds = []) {
     }
 
     let selectedId = pool[Math.floor(Math.random() * pool.length)];
+    
+    // SAFEGUARD MUTLAK: Cegah wild atau scatter ke-pick acak
+    if (selectedId === 'wild' || selectedId === 'scatter') selectedId = 'dots2';
+
     let symObj = symbols.find(s => s.id === selectedId);
     let sym = { ...symObj, isGoldFrame: false };
     
-    let goldChance = (globalRTP / 100) * (isFreeSpin ? 0.20 : 0.05);
-    if (mode === 'GACOR') goldChance += 0.15;
+    let goldChance = (globalRTP / 100) * (isFreeSpin ? 0.15 : 0.05);
+    if (mode === 'GACOR') goldChance += 0.10;
     
-    if (col > 0 && col < 4 && selectedId !== 'scatter' && selectedId !== 'wild' && Math.random() < goldChance) {
+    // Bingkai emas cuma ada di kolom 2, 3, 4
+    if (col > 0 && col < 4 && Math.random() < goldChance) {
         sym.isGoldFrame = true;
     }
     return sym;
@@ -294,7 +298,6 @@ function startSpin() {
     document.getElementById('win-banner').classList.add('hidden');  
 
     if (!isFreeSpin) {  
-        // 🌟 POTONG SALDO API: Berhenti di sini sampai disetujui parent
         potongSaldo(bet);
     } else {  
         freeSpinsLeft--; document.getElementById('fs-left-val').innerText = freeSpinsLeft;  
@@ -418,7 +421,7 @@ function executeRollPhase() {
 }
 
 // ==========================================
-// 7. LOGIKA CASCADE GRAVITASI ASLI PG SOFT
+// 7. EVALUASI MENANG & CASCADE MULUS
 // ==========================================
 function evaluateWinningWays() {
     let baseWinCash = 0; let winningTilesSet = new Set(); let firstReelSyms = new Set();
@@ -448,9 +451,7 @@ function triggerDestruction(winningTilesSet, baseWinCash) {
     let activeMulti = activeMultiArr[currentMultiIndex];
     let calcWin = baseWinCash * activeMulti;
 
-    // 🌟 TAMBAH SALDO API JIKA MENANG
     if (calcWin > 0) tambahSaldo(calcWin);
-
     totalWinRound += calcWin; 
     
     if (isFreeSpin) {
@@ -464,6 +465,9 @@ function triggerDestruction(winningTilesSet, baseWinCash) {
 
     let banner = document.getElementById('win-banner');  
     banner.classList.remove('hidden');  
+
+    // DOWNGRADE MODE SAAT CASCADE BIAR BANDAR GAK RUNGKAD
+    let cascadeMode = currentSpinMode === 'GACOR' ? 'RECEH' : 'ZONK';
 
     for (let col = 0; col < 5; col++) {  
         let remainingTiles = [];  
@@ -494,7 +498,7 @@ function triggerDestruction(winningTilesSet, baseWinCash) {
         if (destroyedCount > 0) {  
             const reel = document.getElementById(`reel-${col}`);  
             let oldDummy = reel.querySelector('.dummy-top');  
-            let dummySym = oldDummy ? oldDummy.sym : getSymbolFromPool(currentSpinMode, col);  
+            let dummySym = oldDummy ? oldDummy.sym : getSymbolFromPool(cascadeMode, col);  
 
             setTimeout(() => {  
                 if (oldDummy) oldDummy.remove();  
@@ -511,7 +515,7 @@ function triggerDestruction(winningTilesSet, baseWinCash) {
                 let spawned = [];  
                 let newSyms = [dummySym]; 
                 for (let r = 1; r < destroyedCount; r++) {  
-                    newSyms.push(getSymbolFromPool(currentSpinMode, col));   
+                    newSyms.push(getSymbolFromPool(cascadeMode, col));   
                 }  
                 
                 for(let i = 0; i < destroyedCount; i++) {
@@ -530,7 +534,7 @@ function triggerDestruction(winningTilesSet, baseWinCash) {
                     spawned.push({ el: tile, sym: sym, row: targetRowIndex });  
                 }
                 
-                let nextDummySym = getSymbolFromPool(currentSpinMode, col);
+                let nextDummySym = getSymbolFromPool(cascadeMode, col);
                 let newDummy = generateTileDOM(col, 0, nextDummySym);
                 
                 let dummyStartRow = -1 - destroyedCount;
