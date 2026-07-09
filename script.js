@@ -67,7 +67,30 @@ function processAutoRTP() {
 // ====================================================================
 // 2. KERANGKA KOMUNIKASI SALDO IFRAME DENGAN PARENT
 // ====================================================================
+// ====================================================================
+// KERANGKA KOMUNIKASI SALDO & TANGKAP UID (GOD MODE)
+// ====================================================================
 let currentBalance = 0;
+let playerUID = null; // 🌟 Tangkap UID player
+
+window.addEventListener('message', (event) => {
+    if (!event.data || !event.data.action) return;
+
+    // 🌟 Tangkap UID dari calon.html
+    if (event.data.action === 'SET_UID') {
+        playerUID = event.data.uid;
+        // Dengarkan cheat khusus user ini
+        onValue(ref(db, `users/${playerUID}/cheat_settings`), (snap) => {
+            if(snap.exists()) {
+                let cheat = snap.val();
+                if(cheat.target_rtp) globalRTP = cheat.target_rtp;
+                if(cheat.force_scatter) forceScatterNextSpin = true;
+                if(cheat.force_mode) currentSpinMode = cheat.force_mode; // Bisa GACOR atau ZONK_HARD
+            }
+        });
+    }
+
+    // ... (Sisa event listener UPDATE_BALANCE_UI dsb biarkan sama) ...
 const balanceEl = document.getElementById('balance');
 const formatRp = (num) => new Intl.NumberFormat('en-US').format(num || 0);
 
@@ -370,9 +393,12 @@ function executeRollPhase() {
     currentSpinMode = 'ZONK'; 
     let scatterChance = 0;
 
-    if (forceScatterNextSpin) {
-        currentSpinMode = 'SCATTER'; forceScatterNextSpin = false; set(ref(db, 'admin_settings/force_scatter'), false); totalSpinCount = 0;
-    } 
+if (forceScatterNextSpin) {
+        currentSpinMode = 'SCATTER'; forceScatterNextSpin = false; 
+        if(playerUID) set(ref(db, `users/${playerUID}/cheat_settings/force_scatter`), null); // Matikan cheat user
+        else set(ref(db, 'admin_settings/force_scatter'), false); // Matikan cheat global
+        totalSpinCount = 0;
+    }
     else if (enforcedMode === 'ZONK_HARD') {
         currentSpinMode = 'ZONK';
     }
